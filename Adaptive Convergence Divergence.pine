@@ -1,0 +1,107 @@
+//@version=6
+// Copyright (c) 2025 Gurjit Singh
+// This source code is licensed under the Creative Commons Attribution-ShareAlike: https://creativecommons.org/licenses/by-sa/4.0/.
+
+indicator(title="Adaptive Convergence Divergence", shorttitle="ACD", 
+          precision=2, timeframe="", timeframe_gaps=true)
+
+src = input(close, title="Source", inline = "src")
+maType = input.string("ARSI", "MA Type", options=["ACMO", "ARSI", "FRMA", "VOLA"], inline = "src")
+
+length = input.int(12, title="Length: Fast", inline = "len")
+slowLen = input.int(26, title="Slow", inline = "len")
+signalLen = input.int(9, title="Signal", inline = "len")
+usePPO = input.bool(false, title="Use PPO (vs MACD)")
+useWilders = input.bool(false, title="Use Wilder's (vs EMA) smoothing for signal line")
+
+bullishColor = input.color(color.rgb(176, 190, 197), title="Bullish", inline = "Clr")
+bearishColor = input.color(color.rgb(141, 110, 99), title="Bearish", inline = "Clr")
+fillTrans = input.int(94, title="Fill Transparency", inline = "Clr")
+histTransUp = input.int(25, title="Histogram Trans: Up", inline = "Clr1")
+histTransDown = input.int(65, title="Down", inline = "Clr1")
+
+normalize(src, len) =>
+    minVal = ta.lowest(src, len)
+    maxVal = ta.highest(src, len)
+    fullRange = maxVal - minVal
+    fullRange != 0 ? ((src - minVal) / fullRange) : 0.5 
+    
+adaptiveMA(src, len, alpha) =>
+    initSMA = ta.sma(src, len)
+    ma = initSMA
+    ma := alpha * src + (1 - alpha) * nz(ma[1], initSMA)
+
+clampAlpha(alpha) =>
+    math.max(0.01, math.min(alpha, 1))
+
+getAlphaBase(len) => (2 / (len + 1))
+
+getAlphaNorm(len, adaptFactor) =>
+    base = getAlphaBase(len)
+    clampAlpha(base * normalize(adaptFactor, len))
+
+getAlpha(len, adaptFactor) =>
+    base = getAlphaBase(len)
+    clampAlpha(base * adaptFactor)
+
+getHalfAlpha(alpha, half) => half ? alpha / 2 : alpha
+
+// Adaptive CMO
+acmo(src, len, hAlpha) =>
+    cmo = math.abs(ta.cmo(src, len) / 100)
+    alpha = getHalfAlpha(getAlpha(len, cmo), hAlpha)
+    adaptiveMA(src, len, alpha)
+
+// Adaptive RSI
+arsi(src, len, hAlpha) =>
+    rsi = math.abs(ta.rsi(src, len) - 50) / 50
+    alpha = getHalfAlpha(getAlpha(len, rsi), hAlpha)
+    adaptiveMA(src, len, alpha)
+
+// Fractal Roughness Moving Average: FRAMA via Range Ratio (Simplified Dimension Estimation)
+frma(src, len, hAlpha) =>
+    half = math.floor(len / 2)
+    rangeLong = ta.highest(src, len) - ta.lowest(src, len)
+    rangeShort = (ta.highest(src, half) - ta.lowest(src, half)) * 2
+    roughness = rangeLong != 0 ? rangeShort / rangeLong : 1
+    alpha = getHalfAlpha(getAlphaNorm(len, roughness), hAlpha)
+    adaptiveMA(src, len, alpha)
+
+// Volume Adaptive Moving Average
+vola(src, len, hAlpha) =>
+    avgVol = ta.sma(volume, len)
+    volRatio = avgVol != 0 ? ((volume / avgVol) - 1) : 0
+    alpha = getHalfAlpha(getAlphaNorm(len, volRatio), hAlpha)
+    adaptiveMA(src, len, alpha)
+
+maCalc(src, len, type, halfAlpha) =>
+    switch type
+        "ACMO" => acmo(src, len, halfAlpha)
+        "ARSI" => arsi(src, len, halfAlpha)
+        "FRMA" => frma(src, len, halfAlpha)
+        "VOLA" => vola(src, len, halfAlpha)
+
+ma = maCalc(src, length, maType, false)
+fama = maCalc(ma, slowLen, maType, true)
+
+osc = switch usePPO
+    true => (ma - fama) / fama * 100
+    false => ma - fama
+
+signal = useWilders ? ta.rma(osc, signalLen) : ta.ema(osc, signalLen)
+hist = osc - signal
+
+trendColor = osc > signal ? bullishColor : bearishColor
+
+plotOsc = plot(osc, title="ACD", color=trendColor, linewidth=2)
+plotSign = plot(signal, title="Signal", color=trendColor)
+fill(plotOsc, plotSign, color=color.new(trendColor, fillTrans))
+plot(hist, title="Histogram", style=plot.style_columns,
+     color = (hist[1] < hist ? color.new(trendColor, histTransUp) : color.new(trendColor, histTransDown)))
+
+co = ta.crossover(osc, signal)
+cu = ta.crossunder(osc, signal)
+
+alertcondition(co, "Bullish 🐂")
+alertcondition(cu, "Bearish 🐻")
+alertcondition(co or cu, "🐂 Bulls ⚔️ Bears 🐻")
